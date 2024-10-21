@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Runtime.ExceptionServices;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 
 namespace Microsoft.Azure.Agent;
 
@@ -14,6 +15,7 @@ internal class AzureCopilotReceiver : IDisposable
     private readonly MemoryStream _memoryStream;
     private readonly CancellationTokenSource _cancelMessageReceiving;
     private readonly BlockingCollection<CopilotActivity> _activityQueue;
+    private readonly ILogger _logger;
 
     private AzureCopilotReceiver(ClientWebSocket webSocket)
     {
@@ -22,6 +24,9 @@ internal class AzureCopilotReceiver : IDisposable
         _memoryStream = new MemoryStream();
         _cancelMessageReceiving = new CancellationTokenSource();
         _activityQueue = new BlockingCollection<CopilotActivity>();
+
+        using ILoggerFactory factory = LoggerFactory.Create(builder => builder.AddConsole());
+        _logger = factory.CreateLogger("AzureCopilotReceiver");
 
         Watermark = -1;
     }
@@ -55,9 +60,10 @@ internal class AzureCopilotReceiver : IDisposable
                     _activityQueue.Add(new CopilotActivity { Error = new ConnectionDroppedException("The server websocket is closing. Connection dropped.") });
                 }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException e)
             {
                 // TODO: log the cancellation of the message receiving thread.
+                _logger.LogWarning($"Message receiving thread has been cancelled because of {e}");
                 // Close the web socket before the thread is going away.
                 closingMessage = "Client closing";
             }
@@ -65,6 +71,7 @@ internal class AzureCopilotReceiver : IDisposable
             if (closingMessage is not null)
             {
                 // TODO: log the closing request.
+                _logger.LogInformation($"Closing async websocket, {closingMessage}");
                 await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, closingMessage, CancellationToken.None);
                 _activityQueue.CompleteAdding();
                 break;
@@ -101,6 +108,7 @@ internal class AzureCopilotReceiver : IDisposable
         }
 
         // TODO: log the current state of the web socket.
+        _logger.LogWarning($"The websocket got in '{_webSocket.State}' state. Connection dropped.");
         _activityQueue.Add(new CopilotActivity { Error = new ConnectionDroppedException($"The websocket got in '{_webSocket.State}' state. Connection dropped.") });
         _activityQueue.CompleteAdding();
     }
